@@ -5,8 +5,8 @@ Tools exposed to the Supervisor Agent:
   - get_inflation            : Latest CPI inflation for any country (World Bank API)
   - get_macro_indicators     : CPI, GDP growth, interest rate, unemployment (World Bank API)
   - analyze_economic_webpage : Fetch a webpage + analyse it using Foundation Model API
-  - list_abs_dataflows       : List available ABS SDMX dataflows
-  - get_abs_data             : Fetch time-series data from the ABS SDMX REST API
+  - list_tnso_dataflows      : List curated TNSO (Thailand NSO) SDMX dataflows
+  - get_tnso_data            : Fetch time-series data from the TNSO SDMX REST API
   - web_search               : Search the web for economic data and news (DuckDuckGo)
 """
 
@@ -15,70 +15,86 @@ import httpx
 from server import utils
 
 WORLD_BANK_BASE = "https://api.worldbank.org/v2"
-ABS_BASE = "https://data.api.abs.gov.au/rest"
+# Thailand National Statistical Office (TNSO) — SIS-CC .Stat Suite, SDMX-REST v1.
+# Serves SDMX-JSON 1.0 (singular `data.structure`) on
+# `Accept: application/vnd.sdmx.data+json;version=1.0`. No auth required.
+TNSO_BASE = "https://ns1-stathub.nso.go.th/rest"
+TNSO_AGENCY = "TNSO"
 
-# Curated major ABS dataflows with validated SDMX key examples
-# Key format: dimension values joined by "." — empty segment means "all values for that dimension"
-ABS_DATAFLOWS: dict[str, dict] = {
-    "CPI": {
-        "description": "Consumer Price Index — all groups and sub-groups (quarterly & monthly)",
-        "dimensions": "MEASURE . INDEX . TSEST . REGION . FREQ",
+# Curated TNSO dataflows with live-verified SDMX dimension orders and example keys.
+# Harvested from GET {TNSO_BASE}/dataflow/TNSO on 2026-07-19 (909 flows total);
+# dimension orders and observations confirmed live against the data endpoint.
+# Key format: dimension values joined by "." (positional, DSD order) — an empty
+# segment means "all values for that dimension".
+# NOTE: TNSO TIME_PERIOD values are Buddhist-Era (BE) years — subtract 543 for the
+# Gregorian year (e.g. 2564 = 2021). Dimension labels are returned in English.
+TNSO_DATAFLOWS: dict[str, dict] = {
+    "DF_01DI_IND_AGING": {
+        "description": "Aging Index — ratio of elderly to child population, by province (every 3 years)",
+        "version": "1.0",
+        "dimensions": "POP_IND . SEX . AREA . CWT . UNIT_MUL . UNIT . FREQ",
         "common_keys": {
-            "Index numbers, all groups, Australia, quarterly":            "1...50.Q",
-            "Index numbers + annual % change, Australia, quarterly":     "1+3...50.Q",
-            "All measures, all groups, Australia, quarterly (large)":    "all",
+            "Aging index, total, Mae Hong Son province (CWT=58)": "DEM_IND101._T._T.58.0.INX.A3",
+            "All provinces / all measures (large)":               "all",
         },
     },
-    "LF": {
-        "description": "Labour Force Survey — unemployment, participation rate, employment (monthly)",
-        "dimensions": "MEASURE . SEX . AGE . TSEST . REGION . FREQ",
+    "DF_01LET": {
+        "description": "Life expectancy of the population, by area, age and sex (annual)",
+        "version": "1.1",
+        "dimensions": "FREQ . AREA . AGE . SEX . POP_IND . UNIT",
         "common_keys": {
-            "Unemployment rate, persons, seas. adj., Australia":    "M13.3.1599.20.AUS.M",
-            "Participation rate, persons, seas. adj., Australia":   "M12.3.1599.20.AUS.M",
-            "Employed persons, seas. adj., Australia":              "M3.3.1599.20.AUS.M",
-            "All key measures, persons, seas. adj., Australia":     "M3+M12+M13+M6.3.1599.20.AUS.M",
+            "All series (small flow, ~8 series)": "all",
         },
     },
-    "WPI": {
-        "description": "Wage Price Index — hourly rates of pay (quarterly)",
-        "dimensions": "MEASURE . SECTOR . INDUSTRY . TSEST . REGION . FREQ",
+    "DF_01POP_DENSITY": {
+        "description": "Density of population, by province (persons per sq. km)",
+        "version": "1.1",
+        "dimensions": "POP_SUBJ . POP_IND . AREA . CWT . FREQ . UNIT",
         "common_keys": {
-            "All groups, all sectors, Australia (use start_period to limit)": "all",
+            "All provinces / all measures": "all",
         },
     },
-    "ANA_AGG": {
-        "description": "Australian National Accounts: aggregates — GDP, GNI, GNE (quarterly & annual)",
-        "dimensions": "MEASURE . TSEST . REGION . FREQ",
+    "DF_01DI_POP_CENS": {
+        "description": "Census population, by age group, area and municipality",
+        "version": "1.0",
+        "dimensions": "POP_IND . AGE_GP . AREA . MUNICIPAL . UNIT . FREQ",
         "common_keys": {
-            "All aggregates, all adjustment types, Australia": "all",
+            "All series": "all",
         },
     },
-    "RPPI": {
-        "description": "Residential Property Price Indexes — 8 capital cities (quarterly)",
-        "dimensions": "MEASURE . PROP_TYPE . TSEST . REGION . FREQ",
+    "DF_01HH_TOILET": {
+        "description": "Households using sanitary toilets, by facility type and province (%)",
+        "version": "1.2",
+        "dimensions": "STAT_LIST . LIST_STATUS . TOILET_FACILITY . AREA . CWT . UNIT . FREQ",
         "common_keys": {
-            "All price indexes, all property types, all cities": "all",
+            "All series": "all",
         },
     },
-    "MERCH_EXP": {
-        "description": "International merchandise exports by commodity (monthly)",
-        "dimensions": "MEASURE . SITC . COUNTRY . TSEST . FREQ",
+    "DF_01HH_ENERGY": {
+        "description": "Household energy consumption, by cooking-fuel type and area",
+        "version": "1.0",
+        "dimensions": "STAT_LIST . LIST_STATUS . COOKING_FUEL . AREA . UNIT . FREQ",
         "common_keys": {
-            "All exports (use start_period to limit date range)": "all",
+            "All series (small flow, ~48 series)": "all",
         },
     },
-    "MERCH_IMP": {
-        "description": "International merchandise imports by commodity (monthly)",
-        "dimensions": "MEASURE . SITC . COUNTRY . TSEST . FREQ",
+    "DF_01POP_MID": {
+        "description": "Mid-year population, by age group, sex and province",
+        "version": "2.0",
+        "dimensions": "STAT_LIST . LIST_STATUS . AGE_GP . SEX . AREA . CWT . UNIT . FREQ",
         "common_keys": {
-            "All imports (use start_period to limit date range)": "all",
+            "All series (use start_period to limit)": "all",
         },
     },
-    "BOP": {
-        "description": "Balance of Payments and International Investment Position (quarterly)",
-        "dimensions": "MEASURE . ACCOUNT . TSEST . FREQ",
+    "DF_02AWE": {
+        "description": "Average wages of employees, by sex, education, industry and region (large)",
+        "version": "1.0",
+        "dimensions": (
+            "STAT_LIST . LIST_STATUS . SEX . AGE_GROUP . LEV_OF_EDU . INDUSTRY . "
+            "REGION . AREA_MUNICIPAL . UNIT_MUL . UNIT . FREQ"
+        ),
         "common_keys": {
-            "All BOP accounts (use start_period to limit date range)": "all",
+            "All series — 1600+ series, scope with key/start_period": "all",
         },
     },
 }
@@ -86,10 +102,11 @@ ABS_DATAFLOWS: dict[str, dict] = {
 
 def _parse_sdmx_json(response_data: dict, max_series: int = 50, max_obs: int = 8) -> list[dict]:
     """
-    Parse ABS SDMX-JSON compact format into a flat list of records.
+    Parse SDMX-JSON 1.0 (.Stat Suite) compact format into a flat list of records.
 
     Each record contains all series dimension label values, the time period,
-    and the observation value.
+    and the observation value. TIME_PERIOD is emitted verbatim; for TNSO this is
+    a Buddhist-Era year (subtract 543 for Gregorian).
     """
     data_block = response_data.get("data", {})
     structure = data_block.get("structure", {})
@@ -168,8 +185,8 @@ def load_tools(mcp_server) -> None:
                 "get_inflation",
                 "get_macro_indicators",
                 "analyze_economic_webpage",
-                "list_abs_dataflows",
-                "get_abs_data",
+                "list_tnso_dataflows",
+                "get_tnso_data",
             ],
         }
 
@@ -366,70 +383,77 @@ def load_tools(mcp_server) -> None:
     # ── 5. List ABS dataflows ──────────────────────────────────────────────────
 
     @mcp_server.tool
-    def list_abs_dataflows() -> dict:
+    def list_tnso_dataflows() -> dict:
         """
-        List the available Australian Bureau of Statistics (ABS) dataflows
-        that can be queried with get_abs_data.
+        List curated Thailand National Statistical Office (TNSO) SDMX dataflows
+        that can be queried with get_tnso_data.
 
-        Use this tool first to discover what ABS data is available before
-        calling get_abs_data.
+        Use this tool first to discover what TNSO data is available before
+        calling get_tnso_data. Each entry gives the dataflow's version, the
+        dimension order (for building SDMX keys), and example keys.
 
         Returns:
-            dict mapping dataflow_id → {description, dimensions, common_keys}
+            dict mapping dataflow_id → {description, version, dimensions, common_keys}
         """
-        return ABS_DATAFLOWS
+        return TNSO_DATAFLOWS
 
     # ── 6. Fetch ABS SDMX data ─────────────────────────────────────────────────
 
     @mcp_server.tool
-    def get_abs_data(
+    def get_tnso_data(
         dataflow: str,
         key: str = "all",
         start_period: str | None = None,
         end_period: str | None = None,
+        version: str | None = None,
+        agency: str = TNSO_AGENCY,
         max_series: int = 20,
         max_obs_per_series: int = 8,
     ) -> dict:
         """
-        Fetch time-series data from the Australian Bureau of Statistics (ABS)
-        SDMX REST API. No API key required.
+        Fetch time-series data from the Thailand National Statistical Office (TNSO)
+        SDMX REST API (https://ns1-stathub.nso.go.th/rest). No API key required.
 
-        Use list_abs_dataflows first to see available dataflows and their
-        common key patterns.
+        Use list_tnso_dataflows first to see available dataflows, their dimension
+        orders, and common key patterns.
 
-        Common dataflows:
-          - CPI        Consumer Price Index (quarterly)
-          - LF         Labour Force — unemployment, participation (monthly)
-          - WPI        Wage Price Index (quarterly)
-          - ANA_AGG    National Accounts — GDP aggregates (quarterly)
-          - RPPI       Residential Property Price Indexes (quarterly)
-          - MERCH_EXP  Merchandise Exports (monthly)
-          - MERCH_IMP  Merchandise Imports (monthly)
-          - BOP        Balance of Payments (quarterly)
+        Curated dataflows (see list_tnso_dataflows for full detail):
+          - DF_01DI_IND_AGING  Aging Index by province (every 3 years)
+          - DF_01LET           Life expectancy (annual)
+          - DF_01POP_DENSITY   Population density by province
+          - DF_01DI_POP_CENS   Census population by age group
+          - DF_01HH_TOILET     Households using sanitary toilets (%)
+          - DF_01HH_ENERGY     Household energy consumption by fuel type
+          - DF_01POP_MID       Mid-year population by age group and sex
+          - DF_02AWE           Average wages of employees (large)
 
         SDMX key syntax (positional, dot-separated):
-          Each position corresponds to a dimension in order.
-          Leave a position blank to mean "all values" for that dimension.
-          Examples for CPI (MEASURE.INDEX.TSEST.REGION.FREQ):
-            "3...50.Q"  → annual % change, all indexes, all adj types, Australia, quarterly
-            "1...50.Q"  → index numbers, all indexes, Australia, quarterly
-          Examples for LF (MEASURE.SEX.AGE.TSEST.REGION.FREQ):
-            "M13.3.1599.20.0.M" → unemployment rate, persons, all ages, seas. adj, national
+          Each position corresponds to a dimension in DSD order (see `dimensions`
+          in list_tnso_dataflows). Leave a position blank to mean "all values".
+          Example for DF_01DI_IND_AGING (POP_IND.SEX.AREA.CWT.UNIT_MUL.UNIT.FREQ):
+            "DEM_IND101._T._T.58.0.INX.A3" → aging index, total, Mae Hong Son, index, 3-yearly
+
+        IMPORTANT: TNSO TIME_PERIOD values are Buddhist-Era years — subtract 543 for
+        the Gregorian year (e.g. period "2564" = 2021). start_period / end_period, if
+        given, must also be Buddhist-Era.
 
         Args:
-            dataflow:             ABS dataflow ID (e.g. "CPI", "LF", "WPI").
+            dataflow:             TNSO dataflow ID (e.g. "DF_01DI_IND_AGING").
             key:                  SDMX key filter (default "all" returns everything).
-                                  Use common_keys from list_abs_dataflows for useful presets.
-            start_period:         Start of date range — e.g. "2020-Q1", "2020-01", "2015".
+                                  Use common_keys from list_tnso_dataflows for presets.
+            start_period:         Start of date range in BE years — e.g. "2560".
             end_period:           End of date range (optional, defaults to latest available).
+            version:              Optional dataflow version (e.g. "1.0"). Omit for latest.
+            agency:               SDMX agency id (default "TNSO"; this node also hosts
+                                  "IAEG-SDGs" SDG-indicator flows).
             max_series:           Maximum number of data series to return (default 20).
             max_obs_per_series:   Most-recent observations per series (default 8).
 
         Returns:
             dict with keys:
               - dataflow:   the dataflow ID queried
-              - source:     "Australian Bureau of Statistics"
-              - source_url: link to the ABS data catalogue page
+              - source:     "Thailand National Statistical Office"
+              - source_url: link to the TNSO stat-hub
               - records:    list of flat dicts [{dimension_labels..., period, value}]
               - series_count: total series returned
               - error:      present only if the request failed
@@ -440,14 +464,20 @@ def load_tools(mcp_server) -> None:
         if end_period:
             params["endPeriod"] = end_period
 
-        url = f"{ABS_BASE}/data/ABS,{dataflow.upper()}/{key}"
+        flow_ref = f"{agency},{dataflow.upper()}"
+        if version:
+            flow_ref += f",{version}"
+        url = f"{TNSO_BASE}/data/{flow_ref}/{key}"
 
         try:
             with httpx.Client(timeout=30, follow_redirects=True) as client:
                 resp = client.get(
                     url,
                     params=params,
-                    headers={"Accept": "application/vnd.sdmx.data+json;version=1.0"},
+                    headers={
+                        "Accept": "application/vnd.sdmx.data+json;version=1.0",
+                        "Accept-Language": "en",
+                    },
                 )
                 resp.raise_for_status()
                 raw = resp.json()
@@ -456,8 +486,8 @@ def load_tools(mcp_server) -> None:
 
             return {
                 "dataflow": dataflow.upper(),
-                "source": "Australian Bureau of Statistics",
-                "source_url": f"https://www.abs.gov.au/statistics",
+                "source": "Thailand National Statistical Office",
+                "source_url": "https://ns1-stathub.nso.go.th",
                 "key_used": key,
                 "start_period": start_period,
                 "end_period": end_period,
@@ -476,7 +506,7 @@ def load_tools(mcp_server) -> None:
                 "error": f"HTTP {e.response.status_code}: {e.response.text[:300]}",
                 "hint": (
                     "Check the dataflow ID and key syntax. "
-                    "Use list_abs_dataflows to see available dataflows and key examples."
+                    "Use list_tnso_dataflows to see available dataflows and key examples."
                 ),
             }
         except Exception as e:
