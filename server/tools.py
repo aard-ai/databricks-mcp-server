@@ -11,11 +11,12 @@ Tools exposed to the Supervisor Agent:
 """
 
 import httpx
+import os
 
 from server import utils
 
 WORLD_BANK_BASE = "https://api.worldbank.org/v2"
-ABS_BASE = "https://data.api.abs.gov.au/rest"
+ABS_BASE = os.getenv("ABS_BASE_URL", "https://data.api.abs.gov.au/rest")
 
 # Curated major ABS dataflows with validated SDMX key examples
 # Key format: dimension values joined by "." — empty segment means "all values for that dimension"
