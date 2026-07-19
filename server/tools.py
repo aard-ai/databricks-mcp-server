@@ -5,8 +5,8 @@ Tools exposed to the Supervisor Agent:
   - get_inflation            : Latest CPI inflation for any country (World Bank API)
   - get_macro_indicators     : CPI, GDP growth, interest rate, unemployment (World Bank API)
   - analyze_economic_webpage : Fetch a webpage + analyse it using Foundation Model API
-  - list_abs_dataflows       : List available ABS SDMX dataflows
-  - get_abs_data             : Fetch time-series data from the ABS SDMX REST API
+  - list_abs_dataflows       : List available OECD SDMX dataflows (OECD.SDD.TPS)
+  - get_abs_data             : Fetch time-series data from the OECD SDMX REST API
   - web_search               : Search the web for economic data and news (DuckDuckGo)
 """
 
@@ -15,70 +15,67 @@ import httpx
 from server import utils
 
 WORLD_BANK_BASE = "https://api.worldbank.org/v2"
-ABS_BASE = "https://data.api.abs.gov.au/rest"
+OECD_BASE = "https://sdmx.oecd.org/public/rest"
 
-# Curated major ABS dataflows with validated SDMX key examples
-# Key format: dimension values joined by "." — empty segment means "all values for that dimension"
-ABS_DATAFLOWS: dict[str, dict] = {
-    "CPI": {
-        "description": "Consumer Price Index — all groups and sub-groups (quarterly & monthly)",
-        "dimensions": "MEASURE . INDEX . TSEST . REGION . FREQ",
+# Curated major OECD dataflows (agency OECD.SDD.TPS) with live-verified SDMX keys.
+# OECD data queries need the full flow reference {agency},{flow},{version}; ids follow the
+# DSD_<x>@DF_<y> convention and live under sub-agencies (bare agency "OECD" has zero flows).
+# Key format: dimension values joined by "." — an empty segment means "all values" for that
+# dimension. Every example key below was decoded from a live series that returned an observation.
+OECD_DATAFLOWS: dict[str, dict] = {
+    "DSD_CPI_COU_WEIGHTS@DF_CPI_CTRY_WEIGHTS": {
+        "agency": "OECD.SDD.TPS",
+        "version": "1.0",
+        "description": "CPI country weights — OECD composition (annual)",
+        "dimensions": "REF_AREA . FREQ . MEASURE . UNIT_MEASURE",
         "common_keys": {
-            "Index numbers, all groups, Australia, quarterly":            "1...50.Q",
-            "Index numbers + annual % change, Australia, quarterly":     "1+3...50.Q",
-            "All measures, all groups, Australia, quarterly (large)":    "all",
+            "Australia, CPI weight (all measures)":       "AUS...",
+            "Australia, annual, fully specified":         "AUS.A.CPI_W.PT_CPI_OECD",
         },
     },
-    "LF": {
-        "description": "Labour Force Survey — unemployment, participation rate, employment (monthly)",
-        "dimensions": "MEASURE . SEX . AGE . TSEST . REGION . FREQ",
+    "DSD_G20_PRICES@DF_G20_PRICES": {
+        "agency": "OECD.SDD.TPS",
+        "version": "1.0",
+        "description": "G20 — Consumer price indices, all items",
+        "dimensions": "REF_AREA . FREQ . METHODOLOGY . MEASURE . UNIT_MEASURE . EXPENDITURE . ADJUSTMENT . TRANSFORMATION",
         "common_keys": {
-            "Unemployment rate, persons, seas. adj., Australia":    "M13.3.1599.20.AUS.M",
-            "Participation rate, persons, seas. adj., Australia":   "M12.3.1599.20.AUS.M",
-            "Employed persons, seas. adj., Australia":              "M3.3.1599.20.AUS.M",
-            "All key measures, persons, seas. adj., Australia":     "M3+M12+M13+M6.3.1599.20.AUS.M",
+            "China, quarterly CPI, period-on-period growth": "CHN.Q.N.CPI.PC._T.N.G1",
         },
     },
-    "WPI": {
-        "description": "Wage Price Index — hourly rates of pay (quarterly)",
-        "dimensions": "MEASURE . SECTOR . INDUSTRY . TSEST . REGION . FREQ",
+    "DSD_PRICES@DF_PRICES_ALL": {
+        "agency": "OECD.SDD.TPS",
+        "version": "1.0",
+        "description": "Consumer price indices (CPIs, HICPs), COICOP 1999 — very large flow; always pass a scoped key + start_period",
+        "dimensions": "REF_AREA . FREQ . METHODOLOGY . MEASURE . UNIT_MEASURE . EXPENDITURE . ADJUSTMENT . TRANSFORMATION",
         "common_keys": {
-            "All groups, all sectors, Australia (use start_period to limit)": "all",
+            "Belgium, quarterly CPI index": "BEL.Q.N.CPI.IX._T.N._Z",
         },
     },
-    "ANA_AGG": {
-        "description": "Australian National Accounts: aggregates — GDP, GNI, GNE (quarterly & annual)",
-        "dimensions": "MEASURE . TSEST . REGION . FREQ",
+    "DSD_LFS@DF_IALFS_UNE_M": {
+        "agency": "OECD.SDD.TPS",
+        "version": "1.0",
+        "description": "Monthly unemployment rate (infra-annual labour statistics)",
+        "dimensions": "REF_AREA . MEASURE . UNIT_MEASURE . TRANSFORMATION . ADJUSTMENT . SEX . AGE . ACTIVITY . FREQ",
         "common_keys": {
-            "All aggregates, all adjustment types, Australia": "all",
+            "Greece, male, 15-24, unemployment rate": "GRC.UNE_LF_M.PT_LF_SUB._Z.N.M.Y15T24._Z.A",
         },
     },
-    "RPPI": {
-        "description": "Residential Property Price Indexes — 8 capital cities (quarterly)",
-        "dimensions": "MEASURE . PROP_TYPE . TSEST . REGION . FREQ",
+    "DSD_LFS@DF_IALFS_EMP_WAP_Q": {
+        "agency": "OECD.SDD.TPS",
+        "version": "1.0",
+        "description": "Employment rate — share of working-age population",
+        "dimensions": "REF_AREA . MEASURE . UNIT_MEASURE . TRANSFORMATION . ADJUSTMENT . SEX . AGE . ACTIVITY . FREQ",
         "common_keys": {
-            "All price indexes, all property types, all cities": "all",
+            "Ireland, male, 25-54, employment rate": "IRL.EMP_WAP.PT_WAP_SUB._Z.Y.M.Y25T54._Z.A",
         },
     },
-    "MERCH_EXP": {
-        "description": "International merchandise exports by commodity (monthly)",
-        "dimensions": "MEASURE . SITC . COUNTRY . TSEST . FREQ",
+    "DSD_PDB@DF_PDB_ULC_Q": {
+        "agency": "OECD.SDD.TPS",
+        "version": "1.0",
+        "description": "Productivity and unit labour costs (quarterly)",
+        "dimensions": "REF_AREA . FREQ . MEASURE . ACTIVITY . UNIT_MEASURE . PRICE_BASE . TRANSFORMATION . ADJUSTMENT . CONVERSION_TYPE",
         "common_keys": {
-            "All exports (use start_period to limit date range)": "all",
-        },
-    },
-    "MERCH_IMP": {
-        "description": "International merchandise imports by commodity (monthly)",
-        "dimensions": "MEASURE . SITC . COUNTRY . TSEST . FREQ",
-        "common_keys": {
-            "All imports (use start_period to limit date range)": "all",
-        },
-    },
-    "BOP": {
-        "description": "Balance of Payments and International Investment Position (quarterly)",
-        "dimensions": "MEASURE . ACCOUNT . TSEST . FREQ",
-        "common_keys": {
-            "All BOP accounts (use start_period to limit date range)": "all",
+            "Denmark, GDP per person employed, YoY growth": "DNK.Q.GDPEMP._T.PA.Q.GY.S.NC",
         },
     },
 }
@@ -86,7 +83,8 @@ ABS_DATAFLOWS: dict[str, dict] = {
 
 def _parse_sdmx_json(response_data: dict, max_series: int = 50, max_obs: int = 8) -> list[dict]:
     """
-    Parse ABS SDMX-JSON compact format into a flat list of records.
+    Parse SDMX-JSON 1.0 (data.structure singular + series/observation split) into
+    a flat list of records. OECD serves this shape when Accept carries version=1.0.
 
     Each record contains all series dimension label values, the time period,
     and the observation value.
@@ -122,9 +120,17 @@ def _parse_sdmx_json(response_data: dict, max_series: int = 50, max_obs: int = 8
                 if idx < len(vals):
                     labels[dim["id"]] = vals[idx].get("name") or vals[idx].get("id", "")
 
-        # Most-recent observations first
+        # Most-recent observations first.
+        # NOTE: OECD does NOT return TIME_PERIOD values in chronological order, so the
+        # observation *index* is not a proxy for recency (index 53 → "1993", 2024 → index 3).
+        # Sort by the resolved period string, which orders correctly for plain years and for
+        # ISO-style quarter/month keys, and is also chronological for ABS/DotStat.
         observations = series_val.get("observations", {})
-        sorted_obs = sorted(observations.items(), key=lambda x: int(x[0]), reverse=True)
+        sorted_obs = sorted(
+            observations.items(),
+            key=lambda kv: time_index.get(kv[0], kv[0]),
+            reverse=True,
+        )
 
         for obs_idx, obs_val in sorted_obs[:max_obs]:
             value = obs_val[0] if obs_val else None
@@ -368,16 +374,17 @@ def load_tools(mcp_server) -> None:
     @mcp_server.tool
     def list_abs_dataflows() -> dict:
         """
-        List the available Australian Bureau of Statistics (ABS) dataflows
-        that can be queried with get_abs_data.
+        List the available OECD (agency OECD.SDD.TPS) SDMX dataflows that can be
+        queried with get_abs_data.
 
-        Use this tool first to discover what ABS data is available before
-        calling get_abs_data.
+        Use this tool first to discover what OECD data is available before calling
+        get_abs_data. Each entry carries the sub-agency id and version needed to
+        build the OECD flow reference, plus live-verified example keys.
 
         Returns:
-            dict mapping dataflow_id → {description, dimensions, common_keys}
+            dict mapping dataflow_id → {agency, version, description, dimensions, common_keys}
         """
-        return ABS_DATAFLOWS
+        return OECD_DATAFLOWS
 
     # ── 6. Fetch ABS SDMX data ─────────────────────────────────────────────────
 
@@ -385,41 +392,51 @@ def load_tools(mcp_server) -> None:
     def get_abs_data(
         dataflow: str,
         key: str = "all",
+        agency: str | None = None,
+        version: str | None = None,
         start_period: str | None = None,
         end_period: str | None = None,
         max_series: int = 20,
         max_obs_per_series: int = 8,
     ) -> dict:
         """
-        Fetch time-series data from the Australian Bureau of Statistics (ABS)
-        SDMX REST API. No API key required.
+        Fetch time-series data from the OECD SDMX REST API
+        (https://sdmx.oecd.org/public/rest). No API key required.
 
-        Use list_abs_dataflows first to see available dataflows and their
-        common key patterns.
+        Use list_abs_dataflows first to see available dataflows, their sub-agency,
+        version, dimension order, and common key patterns.
 
-        Common dataflows:
-          - CPI        Consumer Price Index (quarterly)
-          - LF         Labour Force — unemployment, participation (monthly)
-          - WPI        Wage Price Index (quarterly)
-          - ANA_AGG    National Accounts — GDP aggregates (quarterly)
-          - RPPI       Residential Property Price Indexes (quarterly)
-          - MERCH_EXP  Merchandise Exports (monthly)
-          - MERCH_IMP  Merchandise Imports (monthly)
-          - BOP        Balance of Payments (quarterly)
+        OECD flow references are {agency},{dataflow},{version}. Content lives under
+        sub-agency ids like OECD.SDD.TPS (the bare agency "OECD" has zero flows), and
+        dataflow ids follow the DSD_<x>@DF_<y> convention. When the dataflow is one of
+        the curated OECD_DATAFLOWS entries, its agency and version are looked up
+        automatically; otherwise pass them explicitly (agency defaults to OECD.SDD.TPS,
+        version to 1.0).
+
+        Common dataflows (agency OECD.SDD.TPS):
+          - DSD_CPI_COU_WEIGHTS@DF_CPI_CTRY_WEIGHTS  CPI country weights (annual)
+          - DSD_G20_PRICES@DF_G20_PRICES             G20 consumer price indices
+          - DSD_PRICES@DF_PRICES_ALL                 CPIs/HICPs COICOP 1999 (large)
+          - DSD_LFS@DF_IALFS_UNE_M                    Monthly unemployment rate
+          - DSD_LFS@DF_IALFS_EMP_WAP_Q                Employment rate
+          - DSD_PDB@DF_PDB_ULC_Q                      Productivity & unit labour costs
 
         SDMX key syntax (positional, dot-separated):
-          Each position corresponds to a dimension in order.
+          Each position corresponds to a dimension in order (see list_abs_dataflows).
           Leave a position blank to mean "all values" for that dimension.
-          Examples for CPI (MEASURE.INDEX.TSEST.REGION.FREQ):
-            "3...50.Q"  → annual % change, all indexes, all adj types, Australia, quarterly
-            "1...50.Q"  → index numbers, all indexes, Australia, quarterly
-          Examples for LF (MEASURE.SEX.AGE.TSEST.REGION.FREQ):
-            "M13.3.1599.20.0.M" → unemployment rate, persons, all ages, seas. adj, national
+          Examples for DSD_CPI_COU_WEIGHTS@DF_CPI_CTRY_WEIGHTS
+            (REF_AREA.FREQ.MEASURE.UNIT_MEASURE):
+            "AUS..."                  → Australia, all frequencies/measures/units
+            "AUS.A.CPI_W.PT_CPI_OECD" → Australia, annual, fully specified
 
         Args:
-            dataflow:             ABS dataflow ID (e.g. "CPI", "LF", "WPI").
+            dataflow:             OECD dataflow ID (e.g. "DSD_CPI_COU_WEIGHTS@DF_CPI_CTRY_WEIGHTS").
             key:                  SDMX key filter (default "all" returns everything).
                                   Use common_keys from list_abs_dataflows for useful presets.
+            agency:               OECD sub-agency id (e.g. "OECD.SDD.TPS"). Optional — resolved
+                                  from the curated catalogue, else defaults to OECD.SDD.TPS.
+            version:              Dataflow version (e.g. "1.0"). Optional — resolved from the
+                                  catalogue, else defaults to "1.0".
             start_period:         Start of date range — e.g. "2020-Q1", "2020-01", "2015".
             end_period:           End of date range (optional, defaults to latest available).
             max_series:           Maximum number of data series to return (default 20).
@@ -428,8 +445,10 @@ def load_tools(mcp_server) -> None:
         Returns:
             dict with keys:
               - dataflow:   the dataflow ID queried
-              - source:     "Australian Bureau of Statistics"
-              - source_url: link to the ABS data catalogue page
+              - agency:     the resolved sub-agency id
+              - version:    the resolved dataflow version
+              - source:     "OECD"
+              - source_url: link to the OECD Data Explorer
               - records:    list of flat dicts [{dimension_labels..., period, value}]
               - series_count: total series returned
               - error:      present only if the request failed
@@ -440,7 +459,13 @@ def load_tools(mcp_server) -> None:
         if end_period:
             params["endPeriod"] = end_period
 
-        url = f"{ABS_BASE}/data/ABS,{dataflow.upper()}/{key}"
+        flow_id = dataflow.upper()
+        entry = OECD_DATAFLOWS.get(flow_id, {})
+        resolved_agency = agency or entry.get("agency") or "OECD.SDD.TPS"
+        resolved_version = version or entry.get("version") or "1.0"
+
+        # OECD requires the full flow reference {agency},{flow},{version} (short form 404s)
+        url = f"{OECD_BASE}/data/{resolved_agency},{flow_id},{resolved_version}/{key}"
 
         try:
             with httpx.Client(timeout=30, follow_redirects=True) as client:
@@ -455,9 +480,11 @@ def load_tools(mcp_server) -> None:
             records = _parse_sdmx_json(raw, max_series=max_series, max_obs=max_obs_per_series)
 
             return {
-                "dataflow": dataflow.upper(),
-                "source": "Australian Bureau of Statistics",
-                "source_url": f"https://www.abs.gov.au/statistics",
+                "dataflow": flow_id,
+                "agency": resolved_agency,
+                "version": resolved_version,
+                "source": "OECD",
+                "source_url": "https://data-explorer.oecd.org/",
                 "key_used": key,
                 "start_period": start_period,
                 "end_period": end_period,
