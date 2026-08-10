@@ -1,3 +1,11 @@
+> [!WARNING]
+> **Research fork — not for data access.**
+>
+> `aard-ai/databricks-mcp-server` is a research clone of [`VNSHANPR/databricks-mcp-server`](https://github.com/VNSHANPR/databricks-mcp-server), kept for studying how
+> MCP servers behave when retargeted at other statistical agencies' SDMX endpoints. It is
+> not maintained, is not published to any package registry, and **must not be used as an
+> MCP server for data access**. For a working server, use the upstream project.
+
 # Economic Intelligence MCP Server
 
 A production-ready **Model Context Protocol (MCP) server** deployed as a **Databricks App**, designed to give AI Supervisor Agents real-time access to external macroeconomic data — no API keys required for most sources.
